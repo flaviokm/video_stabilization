@@ -86,12 +86,10 @@ class Tracker():
 
     def adjust_fitted_to_show(self,image,size):
         image_superposted = np.zeros(image.shape)
-        # print ('final sizes:{}\t{}'.format(image_superposted.shape,resized_image.shape))
         resized_image = cv2.resize(image,size)
         x0 = image_superposted.shape[0]//2-resized_image.shape[0]//2
         y0 = image_superposted.shape[1]//2-resized_image.shape[1]//2
         image_superposted[x0:x0+resized_image.shape[0],y0:y0+resized_image.shape[1]] = resized_image
-        # print (image_superposted.shape)
         return image_superposted.astype(image.dtype)
 
 if __name__ == "__main__":
