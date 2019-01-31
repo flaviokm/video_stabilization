@@ -3,8 +3,11 @@ import numpy as np
 import copy
 import math
 from copy import deepcopy
+from filters import KalmanFilter
+import argparse
+
 class Tracker():
-    def __init__(self,image):
+    def __init__(self,image,fit = False):
         self.reference_image = cv2.cvtColor(image,cv2.COLOR_BGR2GRAY)
         self.feature_params =  dict(maxCorners=100,
                                                          qualityLevel=0.2,
@@ -17,6 +20,8 @@ class Tracker():
             self.reference_image, mask=None, **self.feature_params)
         self.affine_matrix = None
         self.kalman_filter = None
+        self.fix_fit  = fit
+        self.fit_angle = 30
 
     def change_reference(self,image):
         self.reference_image = cv2.cvtColor(image,cv2.COLOR_BGR2GRAY)
@@ -46,9 +51,11 @@ class Tracker():
         translation = affine_matrix[:,-1]
         rotation = affine_matrix[:,:-1]
         rotation_angle = math.asin(1.0) if rotation[0,1]>1.0 else math.asin(rotation[0,1]) if rotation[0,1] > -1.0 else math.asin(-1.0)
-        dst = cv2.warpAffine(image, affine_matrix, (image.shape[1], image.shape[0]),flags=cv2.INTER_CUBIC)
-        return dst
-        # return self.fit_rotation(dst,rotation_angle)
+        dst = cv2.warpAffine(image, affine_matrix, (image.shape[1], image.shape[0]),flags=cv2.INTER_AREA)
+        if self.fix_fit:
+            return self.fit_rotation(dst,self.fit_angle*math.pi/180.0)
+        else:
+            return dst,(dst.shape[1],dst.shape[0])
 
     def fit_rotation(self,image,angle):
         def rotatedRectWithMaxArea(w, h, angle):
@@ -75,33 +82,27 @@ class Tracker():
         wn,hn = rotatedRectWithMaxArea(w, h, -angle)
         x1,y1 = int(center[0]-wn//2),int(center[1]-hn//2)
         x2,y2 = int(center[0]+wn//2),int(center[1]+hn//2)
-        return cv2.resize(image[y1:y2,x1:x2],(w,h), interpolation=cv2.INTER_AREA)
+        return cv2.resize(image[y1:y2,x1:x2],(w,h), interpolation=cv2.INTER_AREA),(int(wn),int(hn))
 
-class KalmanFilter():
-    def __init__(self,priori_value,shape,Q = 15e-2):
-        self.process_variance = np.ones(shape)*Q
-        self.priori_value = priori_value
-        self.priori_error = np.zeros(shape)
-        self.posteriori_value = np.zeros(shape)
-        self.posteriori_error = np.zeros(shape)
-        self.estimated_variance = np.ones(shape)*(0.1)
-        self.kalman_gain = np.zeros(shape)
-    
-    def update(self):
-        self.priori_value = deepcopy(self.posteriori_value)
-        self.priori_error = deepcopy(self.posteriori_error)
-        self.kalman_gain = self.priori_error/(self.priori_error+self.estimated_variance)
-
-    def estimate(self,measurement):
-        self.posteriori_value = self.priori_value+ self.kalman_gain*(measurement-self.priori_value)
-        self.posteriori_error = (np.ones(self.kalman_gain.shape)-self.kalman_gain)*self.priori_error + self.process_variance
-        return self.posteriori_value
-    
-    def apply(self,measurement):
-        self.update()
-        return self.estimate(measurement)
+    def adjust_fitted_to_show(self,image,size):
+        image_superposted = np.zeros(image.shape)
+        # print ('final sizes:{}\t{}'.format(image_superposted.shape,resized_image.shape))
+        resized_image = cv2.resize(image,size)
+        x0 = image_superposted.shape[0]//2-resized_image.shape[0]//2
+        y0 = image_superposted.shape[1]//2-resized_image.shape[1]//2
+        image_superposted[x0:x0+resized_image.shape[0],y0:y0+resized_image.shape[1]] = resized_image
+        # print (image_superposted.shape)
+        return image_superposted.astype(image.dtype)
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description='Video Stabilizer')
+    parser.add_argument(
+        '-f','--fit',
+        nargs='?', const='', default='', type=bool,
+        help='fix the fited window')
+    args = parser.parse_args()
+
     windows = ['image','new_image','comparison']
     for win_num,window in enumerate(windows):
         cv2.namedWindow(window, cv2.WINDOW_NORMAL)
@@ -113,17 +114,20 @@ if __name__ == "__main__":
         if ret == True:
             new_image = copy.deepcopy(original_image)
             if tracker is not None: 
-                new_image = tracker.calc_affine(original_image)
+                new_image,size = tracker.calc_affine(original_image)
+                cv2.imshow(windows[0], original_image)
+                cv2.imshow(windows[1], new_image)
+                if args.fit:
+                    cv2.imshow(windows[2], cv2.addWeighted(tracker.adjust_fitted_to_show(new_image,size),0.5,cv2.cvtColor(tracker.reference_image,cv2.COLOR_GRAY2BGR),0.5,1))#   new_image)
+                else:
+                    cv2.imshow(windows[2], cv2.addWeighted(new_image,0.5,cv2.cvtColor(tracker.reference_image,cv2.COLOR_GRAY2BGR),0.5,1))#   new_image)
+                for window in windows:
+                    cv2.resizeWindow(window, 640, 360)
+                k = cv2.waitKey(60) & 0xff
+                if k == 27:
+                    break
+                if k == 32:
+                    tracker.change_reference(original_image)
             else:
-                tracker = Tracker(copy.deepcopy(original_image))
-            cv2.imshow(windows[0], original_image)
-            cv2.imshow(windows[1], new_image)
-            cv2.imshow(windows[2], cv2.addWeighted(new_image,0.5,cv2.cvtColor(tracker.reference_image,cv2.COLOR_GRAY2BGR),0.5,1))#   new_image)
-            for window in windows:
-                cv2.resizeWindow(window, 640, 360)
-            k = cv2.waitKey(60) & 0xff
-            if k == 27:
-                break
-            if k == 32:
-                tracker.change_reference(original_image)
-    
+                tracker = Tracker(copy.deepcopy(original_image),fit = args.fit)
+           
